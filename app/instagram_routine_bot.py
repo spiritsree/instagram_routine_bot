@@ -25,12 +25,14 @@ import configargparse
 try:
     from instagram_private_api import (
         Client, ClientError, ClientLoginError,
+        ClientCheckpointRequiredError, ClientChallengeRequiredError,
         ClientCookieExpiredError, ClientLoginRequiredError, MediaRatios,
         __version__ as client_version)
 except ImportError:
     sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
     from instagram_private_api import (
         Client, ClientError, ClientLoginError,
+        ClientCheckpointRequiredError, ClientChallengeRequiredError,
         ClientCookieExpiredError, ClientLoginRequiredError, MediaRatios,
         __version__ as client_version)
 
@@ -200,12 +202,12 @@ def store_analytics(u_name, a_dir, f_list, app_logger):
     f_old_data = {}
     if os.path.isfile(store_yesterday):
         f_old_data = read_json_file(store_yesterday, app_logger)
-    # Get delta
-    f_old_list = f_old_data.get(u_name).get('followers')
-    if f_old_list:
-        app_logger.debug('Previous data exist and comapring now')
-        f_data[u_name]['dropped_followers'] = get_missing_item(f_old_list, f_list)
-        f_data[u_name]['new_followers'] = get_missing_item(f_list, f_old_list)
+        # Get delta
+        f_old_list = f_old_data.get(u_name).get('followers')
+        if f_old_list:
+            app_logger.debug('Previous data exist and comapring now')
+            f_data[u_name]['dropped_followers'] = get_missing_item(f_old_list, f_list)
+            f_data[u_name]['new_followers'] = get_missing_item(f_list, f_old_list)
     f_data[u_name]['total_dropped_followers'] = len(f_data[u_name]['dropped_followers'])
     f_data[u_name]['total_new_followers'] = len(f_data[u_name]['new_followers'])
     if f_data[u_name]['total_dropped_followers'] > 0:
@@ -244,6 +246,9 @@ def do_authenticate(args, app_logger):
                      on_login=lambda x: onlogin_callback(x, args.cache_file_path, app_logger))
     except ClientLoginError as auth_err:
         app_logger.critical('ClientLoginError {0!s}'.format(auth_err))
+        sys.exit(9)
+    except (ClientCheckpointRequiredError, ClientChallengeRequiredError) as auth_err:
+        app_logger.critical('ClientChallengeRequired {0!s} (Code: {1:d}, Response: {2!s})'.format(auth_err.msg, auth_err.code, auth_err.error_response))
         sys.exit(9)
     except ClientError as auth_err:
         app_logger.critical('ClientError {0!s} (Code: {1:d}, Response: {2!s})'.format(auth_err.msg, auth_err.code, auth_err.error_response))
@@ -302,18 +307,30 @@ def follow_user(client, u_id, app_logger):
     Follow the specified user
     '''
     app_logger.debug('Following user with id {0}'.format(u_id))
-    f_response = client.friendships_create(u_id)
-    if f_response['status'] == 'ok':
-        app_logger.debug('Successfully followed user with id {0}'.format(u_id))
+    try:
+        f_response = client.friendships_create(u_id)
+        if f_response['status'] == 'ok':
+            app_logger.debug('Successfully followed user with id {0}'.format(u_id))
+            return True
+        return False
+    except ClientError as f_err:
+        app_logger.critical('ClientError {0!s} (Code: {1:d}, Response: {2!s})'.format(f_err.msg, f_err.code, f_err.error_response))
+        return False
 
 def unfollow_user(client, u_id, app_logger):
     '''
     Follow the specified user
     '''
     app_logger.debug('Unfollowing user with id {0}'.format(u_id))
-    f_response = client.friendships_destroy(u_id)
-    if f_response['status'] == 'ok':
-        app_logger.debug('Successfully unfollowed user with id {0}'.format(u_id))
+    try:
+        f_response = client.friendships_destroy(u_id)
+        if f_response['status'] == 'ok':
+            app_logger.debug('Successfully unfollowed user with id {0}'.format(u_id))
+            return True
+        return False
+    except ClientError as f_err:
+        app_logger.critical('ClientError {0!s} (Code: {1:d}, Response: {2!s})'.format(f_err.msg, f_err.code, f_err.error_response))
+        return False
 
 def follow_status(client, u_id, app_logger):
     '''
@@ -356,14 +373,20 @@ def post_photo(client, u_dir, c_dir, app_logger):
         else:
             app_logger.debug('Caption file does not exist')
         photo_data, photo_size = media.prepare_image(image_file, aspect_ratios=MediaRatios.standard)
-        upload_response = client.post_photo(photo_data, photo_size, caption=caption_data)
-        if upload_response['status'] == 'ok':
-            app_logger.debug('Image "{0!s}" uploaded Successfully'.format(image_file))
-            os.rename(image_file, '{0!s}/{1!s}'.format(c_dir, p_file))
-            if os.path.isfile(caption_file):
-                os.rename(caption_file, '{0!s}/{1!s}'.format(c_dir, c_file))
-            return True
-        return False
+        try:
+            app_logger.debug('Uploading image "{0!s}" with caption from "{1!s}"'.format(image_file, caption_file))
+            upload_response = client.post_photo(photo_data, photo_size, caption=caption_data)
+            if upload_response['status'] == 'ok':
+                app_logger.debug('Image "{0!s}" uploaded Successfully'.format(image_file))
+                os.rename(image_file, '{0!s}/{1!s}'.format(c_dir, p_file))
+                if os.path.isfile(caption_file):
+                    os.rename(caption_file, '{0!s}/{1!s}'.format(c_dir, c_file))
+                return True
+            return False
+        except ClientError as u_err:
+            app_logger.debug('Image "{0!s}" upload failed'.format(image_file))
+            app_logger.critical('ClientError {0!s} (Code: {1:d}, Response: {2!s})'.format(u_err.msg, u_err.code, u_err.error_response))
+            return False
     app_logger.debug('Image file does not exist')
     return False
 
@@ -414,7 +437,6 @@ def main(args):
     elif args.level:
         app_logger = get_logger(app_name, args.level)
     app_logger.info('Client version: %s', client_version)
-    device_id = None
 
     # IG User selection
     if args.ig_user:

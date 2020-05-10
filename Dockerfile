@@ -50,4 +50,4 @@ ENV CACHE_FILE=/data/cache.json \
 
 ADD ./app /app
 
-ENTRYPOINT ["python",  "/app/instagram_routine_bot.py"]
+CMD ["python",  "/app/instagram_routine_bot.py"]
